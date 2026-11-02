@@ -65,6 +65,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          # 直接读 go.mod 里声明的版本（1.26.0），避免 runner 自带版本过旧导致
+          # GOTOOLCHAIN=auto 的下载链路成为隐藏依赖
+          go-version-file: go.mod
+          cache: false
+
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
@@ -94,6 +102,16 @@ jobs:
             librsvg2-dev \
             libfuse2t64
 
+      - name: 环境诊断
+        shell: bash
+        run: |
+          echo "go:    $(go version 2>&1 || echo MISSING)"
+          echo "make:  $(make --version 2>&1 | head -1 || echo MISSING)"
+          echo "node:  $(node -v 2>&1 || echo MISSING)"
+          echo "npm:   $(npm -v 2>&1 || echo MISSING)"
+          echo "rustc: $(rustc -V 2>&1 || echo MISSING)"
+          echo "cc:    $(which cc clang gcc zig 2>/dev/null | tr '\n' ' ' || echo MISSING)"
+
       - name: 构建 sidecar（上游 Go 二进制）
         shell: bash
         env:
@@ -102,7 +120,18 @@ jobs:
         # 调用同一个脚本，保证本地与 CI 的构建参数完全一致：
         # 内部按需 npm ci + npm run build 生成 go:embed 资源，再调上游 makefile 的对应目标，
         # 最后按 target triple 命名成 Tauri externalBin 要求的文件名（Windows 带 .exe）。
-        run: ./desktop/scripts/build-sidecar.sh
+        #
+        # 失败时把最后 12 行输出成 ::error:: 注解：仓库无 token 时也能通过
+        # check-runs/annotations API 读到原因（job 日志本身要 admin 权限）。
+        run: |
+          set -o pipefail
+          if ./desktop/scripts/build-sidecar.sh 2>&1 | tee /tmp/sidecar-build.log; then
+            exit 0
+          fi
+          echo "### sidecar 构建失败（最后 12 行）" >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; tail -12 /tmp/sidecar-build.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          tail -12 /tmp/sidecar-build.log | sed 's/^/::error::/'
+          exit 1
 
       - name: 打包桌面应用
         shell: bash

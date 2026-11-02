@@ -48,6 +48,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          # 直接读 go.mod 里声明的版本（1.26.0），避免 runner 自带版本过旧导致
+          # GOTOOLCHAIN=auto 的下载链路成为隐藏依赖
+          go-version-file: go.mod
+          cache: false
+
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -59,10 +67,27 @@ jobs:
           # 只缓存桌面壳的 target 目录，上游 Go 侧不涉及
           workspaces: desktop/shell/src-tauri
 
+      - name: 环境诊断
+        shell: bash
+        run: |
+          echo "go:    $(go version 2>&1 || echo MISSING)"
+          echo "make:  $(make --version 2>&1 | head -1 || echo MISSING)"
+          echo "node:  $(node -v 2>&1 || echo MISSING)"
+          echo "npm:   $(npm -v 2>&1 || echo MISSING)"
+          echo "rustc: $(rustc -V 2>&1 || echo MISSING)"
+          echo "cc:    $(which cc clang gcc zig 2>/dev/null | tr '\n' ' ' || echo MISSING)"
+
       - name: 构建 sidecar（上游 Go 二进制）
         # 直接复用本地构建脚本，保证 CI 与本地构建参数完全一致：
         # 内部会按需 npm ci + npm run build 生成 go:embed 资源，再调用 makefile 的 host 目标。
-        run: ./desktop/scripts/build-sidecar.sh
+        # 失败时输出 ::error:: 注解，便于无 token 时通过 API 定位。
+        run: |
+          set -o pipefail
+          if ./desktop/scripts/build-sidecar.sh 2>&1 | tee /tmp/sidecar-build.log; then
+            exit 0
+          fi
+          tail -12 /tmp/sidecar-build.log | sed 's/^/::error::/'
+          exit 1
 
       - name: 编译 Tauri 桌面壳（Rust）
         # Cargo.lock 已入库，用 --locked 保证 CI 与本地解析到完全一致的依赖版本；

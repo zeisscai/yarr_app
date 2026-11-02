@@ -133,11 +133,27 @@ jobs:
           tail -12 /tmp/sidecar-build.log | sed 's/^/::error::/'
           exit 1
 
+      - name: 解析版本号
+        id: ver
+        shell: bash
+        # 用 tag 决定应用版本，避免 tauri.conf.json 里写死的 0.1.0 和 Release 对不上
+        # （表现为 dmg/exe 文件名固定是 yarr_0.1.0_*）。
+        run: |
+          REF="${{ github.ref_name }}"
+          V="${REF#desktop-v}"
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            V="0.1.0"
+            echo "::warning::无法从 $REF 解析出版本号，回退到 $V"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "应用版本: $V"
+
       - name: 打包桌面应用
         shell: bash
         # --bundles 按平台覆盖 tauri.conf.json 里的 targets（那里的 app/dmg 只对 macOS 有效）。
+        # --config 临时覆盖 version，让包内版本与 Release tag 一致。
         # 锁 @2 大版本，避免 CLI 跨大版本变更把流水线打挂。
-        run: npx --yes @tauri-apps/cli@2 build --bundles ${{ matrix.bundles }}
+        run: npx --yes @tauri-apps/cli@2 build --bundles ${{ matrix.bundles }} --config "{\"version\":\"${{ steps.ver.outputs.version }}\"}"
 
       - name: 校验产物
         shell: bash

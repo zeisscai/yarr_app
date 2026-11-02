@@ -94,27 +94,38 @@ impl AppState {
         s
     }
 
-    /// 退出时按 SIGTERM → 等待 → SIGKILL 的顺序收尸，避免 SQLite 留下 -wal/-shm 残留。
+    /// 退出时收尸，避免 SQLite 留下 -wal/-shm 残留或孤儿进程占库。
+    /// unix 走 SIGTERM → 等待 → SIGKILL；Windows 用 taskkill /T /F（没有等价的优雅信号）。
     pub fn shutdown(&self) {
         self.quitting.store(true, Ordering::SeqCst);
         let pid = self.pid.swap(0, Ordering::SeqCst);
         if pid <= 0 {
             return;
         }
+
         #[cfg(unix)]
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        while Instant::now() < deadline {
-            if unsafe { libc::kill(pid, 0) } != 0 {
-                return;
+        {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
-            std::thread::sleep(Duration::from_millis(50));
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < deadline {
+                // 发 0 号信号只探测进程是否存在
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
         }
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
+
+        #[cfg(windows)]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status();
         }
     }
 }

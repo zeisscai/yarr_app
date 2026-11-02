@@ -129,11 +129,16 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出 yarr", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &reload, &log, &sep, &quit])?;
 
+    // macOS 用模板图（纯黑 + alpha，跟随菜单栏明暗）；其他平台用彩色图，
+    // 否则黑色图标在 Windows 深色任务栏上几乎看不见。
+    #[cfg(target_os = "macos")]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    #[cfg(not(target_os = "macos"))]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
     TrayIconBuilder::with_id("main")
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("yarr")
         .menu(&menu)
         .show_menu_on_left_click(false)

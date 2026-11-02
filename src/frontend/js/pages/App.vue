@@ -566,6 +566,18 @@ type Stats = { unread: number; starred: number };
 
 var TITLE = document.title;
 
+// 桌面壳会注入异步对话框实现（desktop/shell/ui/dialogs.js）：
+// WKWebView 不实现 prompt/confirm，壳侧提供了 DOM 版等价物；浏览器下回退到原生 API。
+function askText(message: string, defaultValue?: string): Promise<string | null> {
+  const impl = (window as any).__yarrAskText;
+  return impl ? impl(message, defaultValue) : Promise.resolve(prompt(message, defaultValue));
+}
+
+function askConfirm(message: string): Promise<boolean> {
+  const impl = (window as any).__yarrAskConfirm;
+  return impl ? impl(message) : Promise.resolve(confirm(message));
+}
+
 export default defineComponent({
   mixins: [debounceMixin],
   components: {
@@ -1103,7 +1115,7 @@ export default defineComponent({
       this.refreshStats();
     },
     async moveFeedToNewFolder(feed: Feed) {
-      const title = prompt(this.$t("prompt_folder_name"));
+      const title = await askText(this.$t("prompt_folder_name"));
       if (!title) return;
 
       const [folderErr, folder] = await to(api.folders.create({ title: title }));
@@ -1128,7 +1140,7 @@ export default defineComponent({
       if (!feedsErr) this.refreshStats();
     },
     async renameFolder(folder: Folder) {
-      const newTitle = prompt(this.$t("prompt_new_title"), folder.title);
+      const newTitle = await askText(this.$t("prompt_new_title"), folder.title);
       if (newTitle) {
         const [err] = await to(api.folders.update(folder.id, { title: newTitle }));
         if (err) {
@@ -1143,7 +1155,7 @@ export default defineComponent({
       }
     },
     async deleteFolder(folder: Folder) {
-      if (confirm(this.$t("confirm_delete", { name: folder.title }))) {
+      if (await askConfirm(this.$t("confirm_delete", { name: folder.title }))) {
         const [err] = await to(api.folders.delete(folder.id));
         if (err) {
           this.$refs.toast.addToast(
@@ -1158,7 +1170,7 @@ export default defineComponent({
       }
     },
     async updateFeedLink(feed: Feed) {
-      const newLink = prompt(this.$t("prompt_feed_link"), feed.feed_link);
+      const newLink = await askText(this.$t("prompt_feed_link"), feed.feed_link);
       if (newLink !== null) {
         const [err] = await to(api.feeds.update(feed.id, { feed_link: newLink }));
         if (err) {
@@ -1172,7 +1184,7 @@ export default defineComponent({
       }
     },
     async renameFeed(feed: Feed) {
-      const newTitle = prompt(this.$t("prompt_new_title"), feed.title);
+      const newTitle = await askText(this.$t("prompt_new_title"), feed.title);
       if (newTitle) {
         const [err] = await to(api.feeds.update(feed.id, { title: newTitle }));
         if (err) {
@@ -1186,7 +1198,7 @@ export default defineComponent({
       }
     },
     async deleteFeed(feed: Feed) {
-      if (confirm(this.$t("confirm_delete", { name: feed.title }))) {
+      if (await askConfirm(this.$t("confirm_delete", { name: feed.title }))) {
         const [err] = await to(api.feeds.delete(feed.id));
         if (err) {
           this.$refs.toast.addToast(

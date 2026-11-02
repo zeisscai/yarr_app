@@ -242,6 +242,9 @@ fn main() {
                         .unwrap_or(0);
                     handle_navigation(&nav_handle, url, port)
                 })
+                // WKWebView 不实现 alert/confirm/prompt（wry 的 WKUIDelegate 只有文件选择、
+                // 媒体权限、新窗口），上游的建/重命名/删除对话框会静默失效。这里补一层 DOM 实现。
+                .initialization_script(include_str!("../../ui/dialogs.js"))
                 .build()?;
 
             // macOS：关窗只隐藏，应用留在托盘；Cmd+Q 才真正退出。

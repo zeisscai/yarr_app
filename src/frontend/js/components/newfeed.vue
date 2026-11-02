@@ -73,6 +73,20 @@ import icon from "./icon.vue";
 import toast from "./toast.vue";
 import type { Folder, Feed, FeedLink, FeedCreateData } from "../api-types";
 
+// 桌面壳注入的异步对话框（desktop/shell/ui/dialogs.js）；浏览器下回退到原生 API。
+function askText(message: string, defaultValue?: string): Promise<string | null> {
+  const impl = (window as any).__yarrAskText;
+  return impl ? impl(message, defaultValue) : Promise.resolve(prompt(message, defaultValue));
+}
+
+function alertText(message: string): Promise<void> {
+  const impl = (window as any).__yarrAlert;
+  if (impl) return impl(message);
+  alert(message);
+  return Promise.resolve();
+}
+
+
 export default defineComponent({
   components: {
     "v-icon": icon,
@@ -131,11 +145,11 @@ export default defineComponent({
         this.feedNewChoice = result.choice;
         this.feedNewChoiceSelected = result.choice[0].url;
       } else {
-        alert("No feeds found at the given url.");
+        await alertText("No feeds found at the given url.");
       }
     },
     async createNewFeedFolder() {
-      const title = prompt(this.$t("prompt_folder_name"));
+      const title = await askText(this.$t("prompt_folder_name"));
       if (!title) return;
 
       const [folderErr, result] = await to(api.folders.create({ title: title }));

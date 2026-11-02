@@ -75,6 +75,14 @@ open desktop/shell/src-tauri/target/debug/bundle/macos/yarr.app
 
 调试用环境变量：`YARR_DATA_DIR=/tmp/xxx` 覆盖数据目录；`YARR_SIDECAR=/path/to/yarr` 指定二进制。
 
+### 对话框为什么是自绘的
+
+WKWebView 不实现 `alert` / `confirm` / `prompt`：wry 的 `WKUIDelegate` 只实现了文件选择、媒体权限、新窗口，没有实现这三个 JS 对话框方法。表现是 `prompt()` 直接返回 `null`、`confirm()` 返回 `false` —— 于是「新建文件夹、重命名文件夹/订阅、修改订阅链接、删除确认」全部点了没反应。
+
+壳的做法：`desktop/shell/ui/dialogs.js` 提供等价的异步对话框，由 Rust 侧 `initialization_script` 注入；上游 2 个文件的 8 处调用点改为 `await` 调用，浏览器环境自动回退到原生 API。这是目前唯一的补丁，登记见 [`docs/upstream.md`](docs/upstream.md)。
+
+实现上必须用 `<dialog>.showModal()` 而不是 `z-index` 遮罩：yarr 自己的弹窗就是 `<dialog>`，处于 top layer，任何 `z-index` 都盖不过它。
+
 ## 故意不开的能力
 
 - **不开 `--auth`**：上游鉴权 cookie 是 `Secure: true`（`src/server/middleware/auth.go`），`http://127.0.0.1` 的 WebView 很可能拒收，表现为「登录成功但仍未登录」。安全由「只绑回环 + 随机端口 + 单实例」保证。

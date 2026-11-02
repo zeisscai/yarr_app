@@ -29,7 +29,12 @@ git describe --tags --abbrev=0                                   # 确认新基�
 
 | 日期 | 文件 | 原因 | 能否上游化 | 状态 |
 | --- | --- | --- | --- | --- |
-| — | — | 当前为零补丁：桌面版功能全部通过 `desktop/` 内的新增文件实现，未触碰任何上游文件 | — | — |
+| 2026-11-02 | `src/frontend/js/pages/App.vue` | WKWebView 不实现 `prompt`/`confirm`（wry 的 WKUIDelegate 未实现这三个方法），改为 `await` 壳注入的异步对话框；涉及 6 个调用点 + 2 个 helper | 可上游化（网页端也能受益，且 helper 已做原生回退） | 已应用 |
+| 2026-11-02 | `src/frontend/js/components/newfeed.vue` | 同上：新建文件夹的 `prompt` 与「未发现订阅」的 `alert` 各 1 处 | 可上游化 | 已应用 |
+
+当前补丁数：**1 个补丁，涉及 2 个文件、8 处调用点**。改动形态固定：把同步的 `prompt()`/`confirm()`/`alert()` 换成 `await askText()`/`await askConfirm()`/`await alertText()`，两个 helper 在浏览器环境自动回退到原生 API，因此网页版行为不变。
+
+对话框实现本身（DOM、键盘、focus、深浅色）全部在 `desktop/shell/ui/dialogs.js`，由 Rust 侧通过 `initialization_script` 注入，不占上游代码。若上游未来自己改成异步对话框，这两个文件可以直接回退成上游版本，只需保留 helper 或改用原生实现。
 
 ## 三、同步日志
 

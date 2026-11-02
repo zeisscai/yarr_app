@@ -308,3 +308,18 @@ PASS  退出回收（无残留进程）
 
 - **M3**：About 面板显示双版本号（壳版本 + 上游 `UPSTREAM`）、首启导入引导、代理与开机自启。
 - **M4**：三平台 CI、Developer ID 签名 + 公证、`tauri-plugin-updater` 自动更新。
+
+### 11.6 补丁 001：桌面端 JS 对话框（2026-11-02）
+
+**症状**：新增订阅弹窗里的「新建文件夹」点击无反应。
+
+**根因**（两层，第二层是实测才发现的）：
+
+1. wry 0.57.1 的 `WryWebViewUIDelegate` 只实现了 `runOpenPanel`、`requestMediaCapturePermission`、`createWebViewWithConfiguration`、`windowWillClose`，**没有实现** `runJavaScriptAlertPanel/ConfirmPanel/TextInputPanel`。WKWebView 在缺少 delegate 方法时直接把 `alert/confirm/prompt` 当成无效调用：`prompt()` 返回 `null`，`confirm()` 返回 `false`。
+2. 受影响的不是一个按钮，而是全部 7 处：新建文件夹（弹窗内 / 移动订阅到新文件夹）、重命名文件夹、改订阅链接、重命名订阅、删除文件夹确认、删除订阅确认。
+
+**修法**：壳注入 `desktop/shell/ui/dialogs.js`（Rust `initialization_script`），提供异步的 `__yarrAskText` / `__yarrAskConfirm` / `__yarrAlert`；上游 2 个文件 8 处调用点改成 `await`，helper 在浏览器环境回退原生 API。登记见 `docs/upstream.md`。
+
+**第二个坑（写进代码注释了）**：第一版用 `position: fixed; z-index: 2147483000` 的遮罩，实测点击穿透到了背后的 `<select>`。原因是 yarr 自己的弹窗是 `<dialog>` + `showModal()`，处于 **top layer**，任何 `z-index` 都盖不过它。改为同样用 `<dialog>.showModal()`，并在老 WebKit（Safari < 15.4）上降级为 fixed 遮罩。
+
+**验证**：用 playwright-core + 缓存里的 Chromium 加载真实页面（`http://127.0.0.1:<port>/`），注入同一个 `dialogs.js`，走完整路径：设置 → 新建订阅 → 新建文件夹 → 输入 → 确定。8 项断言全 PASS，包括服务端确实建出文件夹、下拉框自动选中新文件夹、清理后无残留、无页面 JS 报错。

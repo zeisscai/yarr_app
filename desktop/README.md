@@ -94,3 +94,30 @@ open desktop/shell/src-tauri/target/debug/bundle/macos/yarr.app
 ## 许可
 
 MIT，见仓库根目录 `license`。本项目是非官方桌面封装，与上游作者无隶属关系。
+
+## 故障排查
+
+### 添加订阅提示「保存订阅失败 / 500 内部服务错误」
+
+这是上游的行为，不是壳的故障：`handleFeedList` 在抓取或解析源失败时统一返回 `500` 且**响应体为空**（`writeJSON(w, 500, nil)`），前端只能拿到状态码，于是显示成「内部服务错误」。真实原因在日志里。
+
+排查顺序：
+
+1. 托盘菜单「打开日志」，或直接看 `~/Library/Application Support/app.yarr.desktop/yarr.log`，搜 `Faild to discover feed`（上游原文就是这个拼写）。
+2. 日志会带上具体原因和状态码，例如 `status code 403`、`status code 429`、`context deadline exceeded`。
+3. 用同样的 UA 验证源本身是否可用：
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" -A "Yarr/bleeding" "https://example.com/feed"
+   ```
+
+常见原因：
+
+| 日志里的现象 | 含义 | 处理 |
+| --- | --- | --- |
+| `status code 403` | 源站拒绝阅读器/爬虫 | 换源，或自建实例 |
+| `status code 429` | 触发限流 | 降低刷新频率或换源 |
+| `context deadline exceeded` | 抓取超时（默认 30s） | 换源或自建 |
+| `no feed found` | 页面里没有可识别的 RSS/Atom | 填真正的 feed 地址 |
+
+已知踩坑：**`rsshub.app` 官方实例已按阅读器限制访问**，任何 UA 都返回 403，响应正文明确写着「intended for testing purposes only，建议自建」。可选替代：少数派官方源 `https://sspai.com/feed`、第三方实例（如 `https://rsshub.rssforever.com/sspai/index`），长期使用建议自建 RSSHub。

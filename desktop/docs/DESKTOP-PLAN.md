@@ -330,3 +330,32 @@ PASS  退出回收（无残留进程）
 - `.github/workflows/desktop-build.yml`：matrix 出 macOS arm64（dmg）、Linux x64（AppImage/deb）、Windows x64（NSIS），sidecar 统一走 `build-sidecar.sh` 的 `YARR_MAKE_TARGET`，不复制上游构建命令。产物只传 artifact，不自动建 Release（未签名/未公证）。
 - `build-sidecar.sh` 增加 `YARR_MAKE_TARGET` / `YARR_BUILD_OUT` 支持，并按三元组自动补 `.exe`；同时修掉两处「`$VAR` 紧邻中文导致变量名被吞」的坑（`${VAR}` 花括号化）。
 - `tauri.conf.json` 增加 `icons/icon.ico`（Windows 打包必需，由 `tauri icon` 从 `icon.png` 生成）。
+
+### 11.8 去掉启动时的「正在启动本地服务」页面（2026-11-02）
+
+**目标**：正常启动不应看到本地状态页，只有失败或极慢（首启迁移）时才需要它。
+
+**第一版尝试（不完整）**：窗口用 `.visible(false)` 创建，等 `on_page_load` 收到远端页 `Finished` 再 `show()`。结果实测失败路径里 `is_visible()` 已经是 `Ok(true)` —— 窗口在启动早期就被显示出来了。
+
+**真正的原因**：`tauri-plugin-window-state` 默认把 `visible` 也纳入恢复范围。上次退出时写进 `.window-state.json` 的 `"visible": true`，会在启动时被执行 `window.show()`，把隐藏策略直接覆盖掉。这与「窗口是否隐藏」的代码写在哪无关，所以第一版怎么调都不对。
+
+**修法**：
+
+```rust
+.with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+```
+
+尺寸/位置/最大化继续记忆，只放弃恢复可见性。配套逻辑：
+
+- 窗口 `.visible(false)`，`on_page_load` 收到远端页 `Finished` 且 `ready` 为真时显示（只在隐藏时显示，避免崩溃重载抢焦点）
+- 失败时 `set_failed()` 主动 `show()` + 聚焦，否则用户只看到 Dock 图标在跳
+- 兜底线程：2.5s 仍未就绪就先显示本地页，避免首启迁移数据库时「点了没反应」
+
+**验证**（日志顺序即证据，其中「窗口可见性」一行是临时诊断日志，验证完已移除）：
+
+```
+正常：已拉起 yarr → yarr 就绪 → 页面加载完成，显示窗口
+失败：启动失败 → 窗口可见性=Ok(false) → 启动失败，显示窗口
+```
+
+失败路径里可见性为 `Ok(false)` 是关键 —— 证明窗口确实保持隐藏，且在失败时被主动显示。回归：smoke 5 项、E2E 11 项全过。

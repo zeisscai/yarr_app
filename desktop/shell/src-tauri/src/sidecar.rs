@@ -36,6 +36,8 @@ pub struct AppState {
     pub port: AtomicU16,
     pub pid: AtomicI32,
     pub quitting: AtomicBool,
+    /// 是否已经拿到可访问的 yarr 地址（决定窗口何时显示）
+    pub ready: AtomicBool,
     /// 防止「点重试」和自动重启同时拉起两个进程
     pub booting: Mutex<()>,
     pub db_path: PathBuf,
@@ -81,6 +83,7 @@ impl AppState {
             port: AtomicU16::new(0),
             pid: AtomicI32::new(0),
             quitting: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             booting: Mutex::new(()),
             db_path,
             log_path,
@@ -318,6 +321,16 @@ fn set_failed(app: &AppHandle, st: &AppState, err: &str) {
         b.error = err.to_string();
     }
     notify_failure(app, err);
+
+    // 启动阶段窗口是隐藏的（为了不显示本地启动页），失败时必须让它露面，
+    // 否则用户只会看到 Dock 图标在跳、什么也没发生。
+    if let Some(w) = app.get_webview_window("main") {
+        if !w.is_visible().unwrap_or(true) {
+            st.sink.push("[desktop] 启动失败，显示窗口".to_string());
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }
 }
 
 /// 远端页面在 yarr 挂掉后已经不可用，用注入的遮罩层告知用户；
@@ -349,6 +362,11 @@ d.textContent="
 }
 
 fn navigate_to_app(app: &AppHandle, url: &str) {
+    // 标记为已就绪：窗口的 on_page_load 回调据此决定"加载完成后才显示"，
+    // 这样启动时不会先闪一下「正在启动本地服务」的本地页。
+    if let Some(st) = app.try_state::<Arc<AppState>>() {
+        st.ready.store(true, Ordering::SeqCst);
+    }
     if let Some(w) = app.get_webview_window("main") {
         match url.parse() {
             Ok(parsed) => {

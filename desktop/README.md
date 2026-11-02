@@ -100,6 +100,7 @@ cd desktop/e2e && npm install && node dialogs.spec.mjs
 
 | 行为 | 说明 |
 | --- | --- |
+| 启动 | 窗口在 yarr 就绪、页面加载完成后才出现，**不显示启动页**；只有首启迁移数据库超过 2.5s 或启动失败时才会看到本地状态页 |
 | 端口 | 每次启动由内核分配空闲端口，只监听 `127.0.0.1` |
 | 数据 | `~/Library/Application Support/app.yarr.desktop/storage.db`（首次启动会尝试从上游默认位置 `Application Support/yarr/storage.db` 导入） |
 | 日志 | 同目录 `yarr.log`，托盘菜单「打开日志」直达；启动失败页也会显示尾部日志 |

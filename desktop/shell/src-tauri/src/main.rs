@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use sidecar::AppState;
@@ -213,7 +214,18 @@ fn main() {
     }));
 
     builder
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 关键：不恢复「可见性」。插件默认会把上次退出时的 visible 状态写回，
+        // 启动时执行 window.show()，这会在 yarr 就绪前把「正在启动本地服务」的
+        // 本地页显示出来 —— 窗口隐藏策略就被这一步破坏掉了。
+        // 尺寸/位置/最大化仍然记忆。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             boot_state,
             retry_boot,
@@ -250,6 +262,32 @@ fn main() {
                 // WKWebView 不实现 alert/confirm/prompt（wry 的 WKUIDelegate 只有文件选择、
                 // 媒体权限、新窗口），上游的建/重命名/删除对话框会静默失效。这里补一层 DOM 实现。
                 .initialization_script(include_str!("../../ui/dialogs.js"))
+                // 窗口先隐藏：yarr 就绪、页面加载完成后再显示。
+                // 这样启动时不会先闪一下「正在启动本地服务」的本地页。
+                // 本地页只在启动很慢（首启迁移 DB）或失败时才作为兜底出现。
+                .visible(false)
+                .on_page_load(|window, payload| {
+                    if payload.event() != PageLoadEvent::Finished {
+                        return;
+                    }
+                    let ready = window
+                        .app_handle()
+                        .try_state::<Arc<AppState>>()
+                        .map(|s| s.ready.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    // 只在隐藏状态下才显示，避免崩溃重载时把焦点从用户手里抢走
+                    if ready && !window.is_visible().unwrap_or(true) {
+                        if let Some(st) = window
+                            .app_handle()
+                            .try_state::<Arc<AppState>>()
+                        {
+                            st.sink
+                                .push("[desktop] 页面加载完成，显示窗口".to_string());
+                        }
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                })
                 .build()?;
 
             // macOS：关窗只隐藏，应用留在托盘；Cmd+Q 才真正退出。
@@ -268,7 +306,23 @@ fn main() {
                 }
             });
 
-            sidecar::start_boot(handle.clone(), state);
+            sidecar::start_boot(handle.clone(), state.clone());
+
+            // 兜底：首启迁移数据库可能超过 1s，2.5s 还没就绪就先显示启动页，
+            // 避免"点了图标却没有任何反应"的错觉；就绪后照常切到真实界面。
+            let late_handle = handle.clone();
+            let late_state = state.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(2500));
+                if late_state.ready.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Some(w) = late_handle.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                    }
+                }
+            });
 
             // 收到 SIGTERM / SIGINT 时走正常退出流程（Tauri 的 exit 会触发 RunEvent::Exit）
             #[cfg(unix)]

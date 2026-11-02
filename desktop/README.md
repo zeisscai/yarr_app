@@ -59,6 +59,43 @@ open desktop/shell/src-tauri/target/debug/bundle/macos/yarr.app
 
 开发循环：`./desktop/scripts/dev.sh`（先构建 sidecar，再 `tauri dev`）。
 
+## 三平台构建
+
+`.github/workflows/desktop-build.yml` 用一个 matrix 出三个平台的安装包：
+
+| 平台 | runner | sidecar make 目标 | 安装包 |
+| --- | --- | --- | --- |
+| macOS arm64 | macos-14 | `host` | `.dmg` |
+| Linux x64 | ubuntu-24.04 | `linux_amd64`（zig cc / musl 静态） | `.AppImage` / `.deb` |
+| Windows x64 | windows-latest | `windows_amd64`（zig cc / windows-gnu） | NSIS `.exe` |
+
+触发方式：手动 `workflow_dispatch`，或推送 `desktop-v*` 标签。产物只上传为 artifact，不自动发 Release —— 目前 macOS 未签名公证、Windows 无代码签名，自动发布等于给用户发"下载后会被系统拦"的包。
+
+本地按平台构建时，用同一套环境变量驱动同一个脚本：
+
+```bash
+# Linux 安装包
+YARR_MAKE_TARGET=linux_amd64 ./desktop/scripts/build-sidecar.sh
+cd desktop/shell && npx @tauri-apps/cli@2 build --bundles appimage,deb
+
+# Windows（在 Windows 上执行，需 zig + make）
+YARR_MAKE_TARGET=windows_amd64 ./desktop/scripts/build-sidecar.sh
+cd desktop/shell && npx @tauri-apps/cli@2 build --bundles nsis
+```
+
+`--bundles` 必须显式传：`tauri.conf.json` 里的 `targets` 写的是 macOS 的 `app/dmg`。
+
+## 端到端检查
+
+`desktop/e2e/` 是一个独立的 Node 小工程（只依赖 `playwright-core`），用真实浏览器加载真实页面，把「新建订阅 → 新建文件夹 → 输入 → 确定」整条路径点一遍，顺带验证 Esc 取消不产生副作用、`confirm()` 能返回 true：
+
+```bash
+# 先启动应用，再：
+cd desktop/e2e && npm install && node dialogs.spec.mjs
+```
+
+不指定 `BASE` 时会从 `~/Library/Application Support/app.yarr.desktop/yarr.log` 里读当前端口；`CHROMIUM` 可指定浏览器，否则自动在 ms-playwright 缓存里找。
+
 ## 运行时行为
 
 | 行为 | 说明 |

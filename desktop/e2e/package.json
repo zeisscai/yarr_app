@@ -1,0 +1,12 @@
+{
+  "name": "yarr-desktop-e2e",
+  "private": true,
+  "type": "module",
+  "description": "桌面壳的端到端检查：验证注入的 JS 对话框可用（WKWebView 本身不实现 prompt/confirm）",
+  "scripts": {
+    "test": "node dialogs.spec.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.0"
+  }
+}

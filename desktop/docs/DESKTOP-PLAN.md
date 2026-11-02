@@ -323,3 +323,10 @@ PASS  退出回收（无残留进程）
 **第二个坑（写进代码注释了）**：第一版用 `position: fixed; z-index: 2147483000` 的遮罩，实测点击穿透到了背后的 `<select>`。原因是 yarr 自己的弹窗是 `<dialog>` + `showModal()`，处于 **top layer**，任何 `z-index` 都盖不过它。改为同样用 `<dialog>.showModal()`，并在老 WebKit（Safari < 15.4）上降级为 fixed 遮罩。
 
 **验证**：用 playwright-core + 缓存里的 Chromium 加载真实页面（`http://127.0.0.1:<port>/`），注入同一个 `dialogs.js`，走完整路径：设置 → 新建订阅 → 新建文件夹 → 输入 → 确定。8 项断言全 PASS，包括服务端确实建出文件夹、下拉框自动选中新文件夹、清理后无残留、无页面 JS 报错。
+
+### 11.7 E2E 与三平台构建入库（2026-11-02）
+
+- `desktop/e2e/`：独立 Node 小工程（只依赖 `playwright-core`），用真实浏览器加载真实页面，跑「新建订阅 → 新建文件夹 → 输入 → 确定」全链路，另含 Esc 取消无副作用、`confirm()` 返回 true 两组断言，共 11 项。**它不是补丁**，补丁指的是上游 `App.vue`/`newfeed.vue` 的 8 处 `await` 改动。
+- `.github/workflows/desktop-build.yml`：matrix 出 macOS arm64（dmg）、Linux x64（AppImage/deb）、Windows x64（NSIS），sidecar 统一走 `build-sidecar.sh` 的 `YARR_MAKE_TARGET`，不复制上游构建命令。产物只传 artifact，不自动建 Release（未签名/未公证）。
+- `build-sidecar.sh` 增加 `YARR_MAKE_TARGET` / `YARR_BUILD_OUT` 支持，并按三元组自动补 `.exe`；同时修掉两处「`$VAR` 紧邻中文导致变量名被吞」的坑（`${VAR}` 花括号化）。
+- `tauri.conf.json` 增加 `icons/icon.ico`（Windows 打包必需，由 `tauri icon` 从 `icon.png` 生成）。

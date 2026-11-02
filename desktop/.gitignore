@@ -8,4 +8,7 @@ shell/src-tauri/target/
 # 图标生成中间产物（tauri icon 会在 macOS 上生成 .iconset 目录）
 shell/src-tauri/icons/*.iconset/
 
+# E2E 依赖（desktop/e2e 自带 package.json）
+e2e/node_modules/
+
 .DS_Store

@@ -18,7 +18,7 @@ PATTERN="$APP/Contents/MacOS"
 pass() { printf 'PASS  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
-[[ -d "$APP" ]] || fail "未找到 $APP，先执行：cd desktop/shell && npx @tauri-apps/cli build --debug --bundles app"
+[[ -d "$APP" ]] || fail "未找到 ${APP}，先执行：cd desktop/shell && npx @tauri-apps/cli build --debug --bundles app"
 
 cleanup() {
   pkill -TERM -f "$PATTERN/yarr-desktop" 2>/dev/null || true

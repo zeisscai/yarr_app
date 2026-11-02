@@ -1,0 +1,284 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+//! yarr 桌面壳。
+//!
+//! 职责边界（刻意保持很薄）：
+//!   - 窗口、托盘、菜单、单实例、自动更新
+//!   - 拉起/看护 yarr 后端进程（见 sidecar.rs）
+//!   - 拦截站外链接，交给系统浏览器
+//!
+//! 不负责：任何业务逻辑、数据库访问、前端渲染。
+//! 因此上游 yarr 更新时，这个 crate 基本不需要跟着改。
+
+mod sidecar;
+
+use std::path::Path;
+use std::process::Command;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+use sidecar::AppState;
+
+// ---------------------------------------------------------------------------
+// 前端可调用的命令（仅本地状态页会调用，远端页面没有 IPC 权限）
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn boot_state(state: tauri::State<'_, Arc<AppState>>) -> sidecar::BootState {
+    state.snapshot()
+}
+
+#[tauri::command]
+fn retry_boot(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) {
+    sidecar::start_boot(app, state.inner().clone());
+}
+
+#[tauri::command]
+fn open_log(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) {
+    open_path(&app, &state.log_path);
+}
+
+#[tauri::command]
+fn open_data_dir(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) {
+    if let Some(dir) = state.db_path.parent() {
+        open_path(&app, dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 系统集成
+// ---------------------------------------------------------------------------
+
+/// 用系统默认程序打开文件/目录（不引入额外插件，行为可预期）。
+fn open_path(_app: &AppHandle, path: &Path) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = Command::new("xdg-open");
+
+    let _ = cmd.arg(path).spawn();
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = Command::new("xdg-open");
+
+    let _ = cmd.arg(url).spawn();
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn is_local_url(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" | "about" | "data" | "blob" => true,
+        "http" | "https" => matches!(url.host_str(), Some("tauri.localhost")),
+        _ => false,
+    }
+}
+
+/// 站外链接一律交给系统浏览器。
+/// 这一步是桌面阅读器的核心语义：上游前端用的是普通 <a href>，不拦截会把整个应用导航走。
+fn handle_navigation(app: &AppHandle, url: &tauri::Url, port: u16) -> bool {
+    if is_local_url(url) {
+        return true;
+    }
+    let is_yarr = matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+        && url.port().map(|p| p == port).unwrap_or(false);
+
+    if is_yarr {
+        return true;
+    }
+
+    match url.scheme() {
+        "http" | "https" | "mailto" => open_url(url.as_str()),
+        _ => {}
+    }
+    let _ = app;
+    false
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "打开主窗口", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?;
+    let log = MenuItem::with_id(app, "log", "打开日志", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 yarr", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &reload, &log, &sep, &quit])?;
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("yarr")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app),
+            "reload" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.eval("window.location.reload()");
+                }
+            }
+            "log" => {
+                if let Some(st) = app.try_state::<Arc<AppState>>() {
+                    open_path(app, &st.log_path);
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn block_shutdown_signals() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// 用 sigwait 而不是 signal handler：handler 里不能安全调用 Tauri API。
+#[cfg(unix)]
+fn spawn_signal_thread(app: AppHandle) {
+    std::thread::spawn(move || unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        let mut sig: libc::c_int = 0;
+        if libc::sigwait(&set, &mut sig) == 0 {
+            app.exit(0);
+        }
+    });
+}
+
+fn main() {
+    // 必须在创建任何线程之前屏蔽退出信号，否则信号会被其他线程接走并直接终止进程，
+    // 走不到 RunEvent::Exit，sidecar 就变成孤儿进程。
+    #[cfg(unix)]
+    block_shutdown_signals();
+
+    let builder = tauri::Builder::default();
+
+    // 单实例必须最先注册：两个实例会争同一个 SQLite 文件，是最难排查的一类故障。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        show_main(app);
+    }));
+
+    builder
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .invoke_handler(tauri::generate_handler![
+            boot_state,
+            retry_boot,
+            open_log,
+            open_data_dir
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let state = AppState::new(&handle).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            app.manage(state.clone());
+
+            build_tray(app)?;
+
+            #[cfg(target_os = "macos")]
+            {
+                // 标准 macOS 菜单（含 About / 隐藏 / 退出，以及编辑菜单的复制粘贴）
+                if let Ok(menu) = Menu::default(app.handle()) {
+                    let _ = app.set_menu(menu);
+                }
+            }
+
+            let nav_handle = handle.clone();
+            let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("yarr")
+                .inner_size(1200.0, 820.0)
+                .min_inner_size(760.0, 520.0)
+                .on_navigation(move |url| {
+                    let port = nav_handle
+                        .try_state::<Arc<AppState>>()
+                        .map(|s| s.port.load(Ordering::SeqCst))
+                        .unwrap_or(0);
+                    handle_navigation(&nav_handle, url, port)
+                })
+                .build()?;
+
+            // macOS：关窗只隐藏，应用留在托盘；Cmd+Q 才真正退出。
+            let win_for_close = win.clone();
+            win.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    #[cfg(target_os = "macos")]
+                    {
+                        api.prevent_close();
+                        let _ = win_for_close.hide();
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = (&api, &win_for_close);
+                    }
+                }
+            });
+
+            sidecar::start_boot(handle.clone(), state);
+
+            // 收到 SIGTERM / SIGINT 时走正常退出流程（Tauri 的 exit 会触发 RunEvent::Exit）
+            #[cfg(unix)]
+            spawn_signal_thread(handle);
+
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("构建 Tauri 应用失败")
+        .run(|app, event| match event {
+            // 无论哪条路径退出，都必须先收尸，否则会留下占着数据库的孤儿进程。
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+                if let Some(st) = app.try_state::<Arc<AppState>>() {
+                    st.shutdown();
+                }
+            }
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => show_main(app),
+            _ => {}
+        });
+}

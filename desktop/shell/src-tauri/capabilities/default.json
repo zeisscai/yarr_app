@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "本地启动/错误状态页的能力（远端 yarr 页面不在授权范围内）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>yarr</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4;
+    --fg: #1c1c1a;
+    --muted: #6b6b66;
+    --line: rgba(0, 0, 0, 0.1);
+    --card: #ffffff;
+    --accent: #3f6f4f;
+    --danger: #a8342c;
+    --code-bg: #efefec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171717;
+      --fg: #ececea;
+      --muted: #9a9a95;
+      --line: rgba(255, 255, 255, 0.12);
+      --card: #1f1f1e;
+      --accent: #8fb99a;
+      --danger: #e0837a;
+      --code-bg: #121211;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.65 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  main { width: 560px; max-width: calc(100vw - 64px); }
+  h1 {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    margin: 0 0 2px;
+  }
+  .sub { color: var(--muted); font-size: 12px; margin: 0 0 28px; }
+  .status { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); flex: none;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .dot.failed { background: var(--danger); animation: none; }
+  @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  .label { font-size: 13px; }
+  .meta { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .error {
+    display: none;
+    margin: 16px 0 4px;
+    padding: 12px 14px;
+    border: 0.5px solid var(--line);
+    border-left: 2px solid var(--danger);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--danger);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .error.show { display: block; }
+  .paths { margin: 18px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
+  .paths code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); opacity: 0.75; }
+  pre {
+    display: none;
+    margin: 14px 0 0;
+    padding: 12px;
+    max-height: 168px;
+    overflow: auto;
+    background: var(--code-bg);
+    border: 0.5px solid var(--line);
+    border-radius: 8px;
+    font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  pre.show { display: block; }
+  .actions { display: flex; gap: 8px; margin-top: 20px; }
+  button {
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 7px;
+    border: 0.5px solid var(--line);
+    background: var(--card);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--fg); color: var(--bg); border-color: transparent; }
+  button.hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>yarr</h1>
+  <p class="sub">本机的 RSS 阅读器</p>
+
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span class="label" id="label">正在启动本地服务…</span>
+    <span class="meta" id="meta"></span>
+  </div>
+
+  <div class="error" id="error"></div>
+  <pre id="log"></pre>
+
+  <div class="paths">
+    数据库 <code id="db">—</code><br />
+    日志 <code id="logpath">—</code>
+  </div>
+
+  <div class="actions">
+    <button class="primary hidden" id="retry">重试</button>
+    <button id="openlog">打开日志</button>
+    <button id="opendata">打开数据目录</button>
+  </div>
+</main>
+
+<script>
+  const tauri = window.__TAURI__ && window.__TAURI__.core;
+  const startedAt = Date.now();
+  const el = id => document.getElementById(id);
+  let navigated = false;
+
+  function fmtElapsed() {
+    const s = Math.floor((Date.now() - startedAt) / 1000);
+    return s < 1 ? "" : s + "s";
+  }
+
+  function render(s) {
+    el("db").textContent = s.db_path || "—";
+    el("logpath").textContent = s.log_path || "—";
+    el("meta").textContent = fmtElapsed();
+
+    if (s.phase === "ready") {
+      el("label").textContent = "正在打开界面…";
+      el("retry").classList.add("hidden");
+    } else if (s.phase === "failed") {
+      el("dot").classList.add("failed");
+      el("label").textContent = "启动失败";
+      el("error").textContent = s.error || "未知错误";
+      el("error").classList.add("show");
+      el("retry").classList.remove("hidden");
+    } else {
+      el("label").textContent = s.attempts > 1
+        ? "正在重试启动（第 " + s.attempts + " 次）…"
+        : "正在启动本地服务…";
+    }
+
+    if (s.log_tail && s.log_tail.length) {
+      el("log").textContent = s.log_tail.slice(-14).join("\n");
+      if (s.phase === "failed") el("log").classList.add("show");
+    }
+  }
+
+  async function tick() {
+    if (!tauri) {
+      el("dot").classList.add("failed");
+      el("label").textContent = "启动器未就绪";
+      el("error").textContent = "无法访问桌面运行时（window.__TAURI__ 缺失）。";
+      el("error").classList.add("show");
+      return;
+    }
+    try {
+      const s = await tauri.invoke("boot_state");
+      render(s);
+      if (s.phase === "ready" && s.url && !navigated) {
+        navigated = true;
+        window.location.replace(s.url);
+        return;
+      }
+    } catch (e) {
+      el("label").textContent = "状态读取失败";
+      el("error").textContent = String(e);
+      el("error").classList.add("show");
+    }
+    setTimeout(tick, 250);
+  }
+
+  el("retry").addEventListener("click", () => {
+    el("dot").classList.remove("failed");
+    el("error").classList.remove("show");
+    el("retry").classList.add("hidden");
+    el("label").textContent = "正在重新启动…";
+    tauri && tauri.invoke("retry_boot");
+  });
+  el("openlog").addEventListener("click", () => tauri && tauri.invoke("open_log"));
+  el("opendata").addEventListener("click", () => tauri && tauri.invoke("open_data_dir"));
+
+  tick();
+</script>
+</body>
+</html>

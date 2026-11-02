@@ -1,0 +1,4 @@
+upstream=https://github.com/nkanaev/yarr
+commit=a87e819b
+tag=v2.9
+synced=2026-11-02

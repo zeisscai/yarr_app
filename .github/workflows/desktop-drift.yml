@@ -1,0 +1,194 @@
+name: upstream-drift
+
+# 上游漂移检测：每周自动试合一次 nkanaev/yarr master。
+# 有冲突 → 开 issue 提醒人工处理；无冲突 → 直接开 PR 到 desktop，绿了就能合。
+# 目的：把「发版前才发现合不上」变成「每周 5 分钟」。
+on:
+  schedule:
+    # 每周一 03:00 UTC（北京时间 11:00）
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+# 这是 fork 仓库：需要建分支、推分支、开 PR、开 issue，
+# 默认的只读 token 不够用，必须显式声明写权限。
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+# 避免两次定时任务叠在一起互相踩（比如上一次的同步 PR 还没合）
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_URL: https://github.com/nkanaev/yarr.git
+      BASE_BRANCH: desktop
+    steps:
+      - name: 检出代码（完整历史）
+        uses: actions/checkout@v4
+        with:
+          # 需要完整历史才能做 merge / merge-tree，并能列出 desktop..upstream/master 的提交
+          fetch-depth: 0
+
+      - name: 配置 git 身份
+        # 后续要 commit（合并没有冲突时），没有 user.name/email 会直接失败
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # rerere 在此处无意义（一次性容器），但保留冲突风格设置以便复现本地行为
+          git config merge.conflictStyle zdiff3
+
+      - name: 拉取上游 master
+        run: |
+          # remote 可能已存在（重复运行 / 手动触发），用 set-url 兜底而不是让 add 报错
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch upstream master --tags --prune
+
+      - name: 判断是否已是最新
+        id: sync
+        # 上游无更新时直接退出，不产生空 PR、不打扰任何人
+        run: |
+          if git merge-base --is-ancestor upstream/master "$BASE_BRANCH"; then
+            echo "已是最新：$BASE_BRANCH 已包含 upstream/master，跳过。"
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          SHA="$(git rev-parse --short=8 upstream/master)"
+          COUNT="$(git rev-list --count "$BASE_BRANCH"..upstream/master)"
+          echo "上游有新提交：$COUNT 个，最新 $SHA"
+          {
+            echo "uptodate=false"
+            echo "sha=$SHA"
+            echo "count=$COUNT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 检测合并冲突（merge-tree）
+        id: probe
+        if: steps.sync.outputs.uptodate == 'false'
+        # 用 `git merge-tree --write-tree`（git >= 2.38）做「试合」：
+        # 只写对象库、不动工作区、不产生 merge commit，比真 merge 再 reset 干净得多。
+        # 退出码 0 = 可干净合并，1 = 有冲突；其他退出码是命令本身出错（参数不支持等），
+        # 必须单独区分，否则「git 太老」会被误报成「上游有冲突」。
+        run: |
+          if ! git merge-tree -h 2>&1 | grep -q -- "--write-tree"; then
+            echo "::error::git $(git --version) 不支持 merge-tree --write-tree（需要 >= 2.38），请升级 runner 上的 git"
+            exit 1
+          fi
+
+          # --no-messages 只在较新 git 上存在（2.39+），存在时输出更干净（只有 tree oid + 文件名）。
+          # 帮助里写作 `--[no-]messages`，所以用最宽松的 "messages" 关键字探测。
+          MT_ARGS=(--write-tree --name-only -z)
+          if git merge-tree -h 2>&1 | grep -q -- "messages"; then
+            MT_ARGS+=(--no-messages)
+          fi
+
+          set +e
+          git merge-tree "${MT_ARGS[@]}" "$BASE_BRANCH" upstream/master > /tmp/mergetree.out 2> /tmp/mergetree.err
+          RC=$?
+          set -e
+
+          case "$RC" in
+            0)
+              echo "conflict=false" >> "$GITHUB_OUTPUT"
+              echo "试合结果：无冲突（可干净合并）"
+              exit 0
+              ;;
+            1)
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              echo "试合结果：有冲突"
+              ;;
+            *)
+              echo "::error::merge-tree 执行失败（rc=$RC）"
+              cat /tmp/mergetree.err
+              exit "$RC"
+              ;;
+          esac
+
+          # -z 输出是 NUL 分隔：第一项是合并后的 tree oid，其余是冲突文件路径
+          tr '\0' '\n' < /tmp/mergetree.out | tail -n +2 > /tmp/conflicts.txt
+          if [[ ! -s /tmp/conflicts.txt ]]; then
+            echo "（merge-tree 未列出具体文件，请本地复现）" > /tmp/conflicts.txt
+          fi
+          echo "--- 冲突文件 ---"
+          cat /tmp/conflicts.txt
+
+      - name: 有冲突：开 issue（已存在则追加评论）
+        if: steps.sync.outputs.uptodate == 'false' && steps.probe.outputs.conflict == 'true'
+        run: |
+          SHA="${{ steps.sync.outputs.sha }}"
+          TITLE="upstream drift: 合并冲突"
+          {
+            echo "自动检测到 \`$BASE_BRANCH\` 无法快进/干净合并 \`upstream/master@$SHA\`。"
+            echo
+            echo "冲突文件："
+            echo
+            echo '```'
+            cat /tmp/conflicts.txt
+            echo '```'
+            echo
+            echo "处理方式见 \`desktop/docs/upstream.md\`：上游语义优先，解决后在补丁登记表登记。"
+            echo
+            echo "本地复现："
+            echo
+            echo '```bash'
+            echo "git fetch upstream --tags"
+            echo "git checkout -b probe $BASE_BRANCH && git merge upstream/master"
+            echo '```'
+            echo
+            echo "_由 upstream-drift workflow 自动生成，upstream commit: \`$SHA\`_"
+          } > /tmp/issue-body.md
+
+          # 同名 issue 已 open 时不重复建，改为追加评论（避免每周刷出一条新 issue）
+          EXISTING="$(gh issue list --search "\"$TITLE\" in:title" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$EXISTING" ]]; then
+            echo "已存在 issue #$EXISTING，追加评论"
+            gh issue comment "$EXISTING" --body-file /tmp/issue-body.md
+          else
+            echo "创建新 issue"
+            gh issue create --title "$TITLE" --body-file /tmp/issue-body.md
+          fi
+
+      - name: 无冲突：建分支、合并、开 PR
+        if: steps.sync.outputs.uptodate == 'false' && steps.probe.outputs.conflict == 'false'
+        run: |
+          SHA="${{ steps.sync.outputs.sha }}"
+          BRANCH="chore/upstream-sync-$SHA"
+
+          # 分支已存在（上一次 PR 还开着）就复用它，避免同名推送冲突
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+            echo "远端分支已存在：$BRANCH"
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -B "$BRANCH" "$BASE_BRANCH"
+            git merge --no-edit upstream/master
+            git push origin "$BRANCH"
+          fi
+
+          # PR 已存在则不再重复创建
+          if [[ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')" ]]; then
+            echo "PR 已存在，跳过创建"
+            exit 0
+          fi
+
+          {
+            echo "上游新提交（\`$BASE_BRANCH..upstream/master\`）："
+            echo
+            echo '```'
+            git log --oneline "$BASE_BRANCH"..upstream/master
+            echo '```'
+            echo
+            echo "合并方式：fast-forward 或普通 merge，未解决任何冲突。"
+            echo "合并前请按 \`desktop/docs/upstream.md\` 第五节走一遍冒烟清单。"
+          } > /tmp/pr-body.md
+
+          gh pr create \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH" \
+            --title "chore: 同步上游 $SHA" \
+            --body-file /tmp/pr-body.md

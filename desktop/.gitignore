@@ -1,0 +1,11 @@
+# 构建产物：由 desktop/scripts/build-sidecar.sh 生成的 sidecar 二进制
+shell/src-tauri/binaries/*
+!shell/src-tauri/binaries/.gitignore
+
+# Rust 构建目录
+shell/src-tauri/target/
+
+# 图标生成中间产物（tauri icon 会在 macOS 上生成 .iconset 目录）
+shell/src-tauri/icons/*.iconset/
+
+.DS_Store

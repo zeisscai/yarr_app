@@ -1,0 +1,84 @@
+name: desktop-ci
+
+# 桌面版（Tauri）构建流水线。只校验「能不能构建出可用产物」，不跑 GUI。
+on:
+  push:
+    paths:
+      - desktop/**
+      - src/**
+      - cmd/**
+      - go.mod
+      - go.sum
+      - makefile
+      - .github/workflows/desktop-ci.yml
+  pull_request:
+    paths:
+      - desktop/**
+      - src/**
+      - cmd/**
+      - go.mod
+      - go.sum
+      - makefile
+      - .github/workflows/desktop-ci.yml
+  workflow_dispatch:
+
+# 上游 go.mod 声明的 Go 版本高于 runner 自带版本，必须允许自动下载工具链；
+# 显式指定校验库，避免个别镜像环境把 GOSUMDB 关掉后 go.sum 形同虚设。
+env:
+  GOTOOLCHAIN: auto
+  GOSUMDB: sum.golang.org
+  # 固定 sidecar 产物名，必须与 tauri.conf.json 里 externalBin 的写法保持一致
+  YARR_TRIPLE: aarch64-apple-darwin
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: 检出代码（完整历史）
+        uses: actions/checkout@v4
+        with:
+          # 必须 fetch-depth: 0。desktop/scripts/build-sidecar.sh 用 `git rev-parse --short=8 HEAD`
+          # 把上游短 sha 注入产物，且 CI 需要 `git describe` 定位基线 tag；浅克隆会直接失败。
+          fetch-depth: 0
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: 缓存 Rust 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 只缓存桌面壳的 target 目录，上游 Go 侧不涉及
+          workspaces: desktop/shell/src-tauri
+
+      - name: 构建 sidecar（上游 Go 二进制）
+        # 直接复用本地构建脚本，保证 CI 与本地构建参数完全一致：
+        # 内部会按需 npm ci + npm run build 生成 go:embed 资源，再调用 makefile 的 host 目标。
+        run: ./desktop/scripts/build-sidecar.sh
+
+      - name: 编译 Tauri 桌面壳（Rust）
+        # Cargo.lock 已入库，用 --locked 保证 CI 与本地解析到完全一致的依赖版本；
+        # 依赖漂移导致的「本地能编、CI 失败」在这里就被拦住。
+        run: cargo build --manifest-path desktop/shell/src-tauri/Cargo.toml --locked
+
+      - name: 冒烟：校验 sidecar 产物与版本号
+        # 不启动 GUI（headless runner 上没有窗口服务器，起了也只会挂住）。
+        # 改为校验：文件存在 + 确实是 Mach-O 可执行文件 + -version 能打印版本。
+        run: |
+          BIN="desktop/shell/src-tauri/binaries/yarr-${YARR_TRIPLE}"
+          test -f "$BIN" || { echo "::error::sidecar 产物缺失: $BIN"; exit 1; }
+          chmod +x "$BIN"
+          echo "--- file ---"
+          file "$BIN"
+          file "$BIN" | grep -q "Mach-O" || { echo "::error::产物不是 Mach-O 可执行文件"; exit 1; }
+          echo "--- version ---"
+          # 输出形如 "2.9 (a87e819b)"，能打印即说明二进制可执行
+          "$BIN" -version

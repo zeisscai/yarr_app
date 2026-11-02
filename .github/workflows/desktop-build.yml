@@ -179,7 +179,9 @@ jobs:
           merge-multiple: true
 
       - name: 列出待发布文件
-        run: ls -lh dist
+        # artifact 的内部结构取决于 upload-artifact 的「最小公共父目录」推断，
+        # 不同平台的产物可能落在 dist/ 的子目录里，所以这里打全量清单而不是只看根目录。
+        run: find dist -type f | sort
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
@@ -214,8 +216,10 @@ jobs:
             - 后端是上游 yarr 原样编译的 sidecar，监听 `127.0.0.1` 随机端口
             - 数据目录：macOS `~/Library/Application Support/app.yarr.desktop/`，Windows `%APPDATA%\app.yarr.desktop\`
             - 唯一的上游补丁：WKWebView 缺失的 `prompt/confirm` 替代实现（见 `desktop/docs/upstream.md`）
+          # 用递归匹配：跨平台 artifact 合并后可能出现 dist/<子目录>/xxx 的层级，
+          # 早先用 dist/*.dmg 直接报「Pattern does not match any files」。
           files: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.deb
+            dist/**/*.dmg
+            dist/**/*.exe
+            dist/**/*.AppImage
+            dist/**/*.deb

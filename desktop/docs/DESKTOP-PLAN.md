@@ -359,3 +359,24 @@ PASS  退出回收（无残留进程）
 ```
 
 失败路径里可见性为 `Ok(false)` 是关键 —— 证明窗口确实保持隐藏，且在失败时被主动显示。回归：smoke 5 项、E2E 11 项全过。
+
+### 11.9 阅读模式失败排查 + 外链垫片（2026-11-03）
+
+**症状**：点书图标提示「阅读模式加载失败」。
+
+**结论**：不是壳的问题，也不是上游代码 bug。阅读模式走 `GET /page?url=…` → `handlePageCrawl`，由**后端重新抓取原链接**再做 readability 提取。浏览器能打开 ≠ 后端能抓到。
+
+证据（对 11 个真实订阅链接逐一调 `/page`）：
+
+| 结果 | 数量 | 说明 |
+| --- | --- | --- |
+| 200 | 10 | 正常提取 |
+| 502 | 1 | 源站返回 404（文章已删） |
+
+另在日志里见到 `status 521`（Cloudflare 报源站宕机）与一次 `EOF`（瞬时抖动，重试即恢复）。UA 不是变量：用 `Yarr/…`、WKWebView 风格、完整 Safari 三种 UA 测同一批链接，结果完全一致。
+
+**顺带发现的真 bug**：工具栏「打开原文」和正文外链都是 `<a target="_blank">`。WKWebView 走 `createWebViewWithConfiguration`（开新窗口），而 wry 只有应用注册了 new-window 回调才处理，否则**返回 nil、点击被静默丢弃**；Tauri 没暴露这个回调，所以点了没反应。
+
+修法（shell-only，**不新增上游补丁**）：`desktop/shell/ui/links.js` 在捕获阶段接管跨源 `http/https/mailto` 链接，`preventDefault()` 后改成同窗口 `location.href`，由 Rust 的 `on_navigation` 拦下并交系统浏览器。站内链接、锚点、`⌘/Ctrl/Shift` 点击都保持原样。
+
+验证：用 Chromium 加载含 `target=_blank` 的测试页，点击后无 popup、URL 变为目标地址（说明垫片生效）；再确认二进制内含 `__yarrLinks` 串。

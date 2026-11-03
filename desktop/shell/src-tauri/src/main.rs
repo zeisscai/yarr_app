@@ -115,10 +115,16 @@ fn handle_navigation(app: &AppHandle, url: &tauri::Url, port: u16) -> bool {
     }
 
     match url.scheme() {
-        "http" | "https" | "mailto" => open_url(url.as_str()),
+        "http" | "https" | "mailto" => {
+            // 留一条日志：外链转浏览器出问题时，这是唯一能确认「拦截确实发生了」的线索
+            if let Some(st) = app.try_state::<Arc<AppState>>() {
+                st.sink
+                    .push(format!("[desktop] 外链交给系统浏览器: {url}"));
+            }
+            open_url(url.as_str())
+        }
         _ => {}
     }
-    let _ = app;
     false
 }
 
@@ -262,6 +268,10 @@ fn main() {
                 // WKWebView 不实现 alert/confirm/prompt（wry 的 WKUIDelegate 只有文件选择、
                 // 媒体权限、新窗口），上游的建/重命名/删除对话框会静默失效。这里补一层 DOM 实现。
                 .initialization_script(include_str!("../../ui/dialogs.js"))
+                // target=_blank 在 WKWebView 里会被 wry 静默丢弃（没有注册 new-window 回调），
+                // 导致「打开原文」和正文外链点了没反应。这里把它降级成同窗口导航，
+                // 再由下面的 on_navigation 转给系统浏览器。
+                .initialization_script(include_str!("../../ui/links.js"))
                 // 窗口先隐藏：yarr 就绪、页面加载完成后再显示。
                 // 这样启动时不会先闪一下「正在启动本地服务」的本地页。
                 // 本地页只在启动很慢（首启迁移 DB）或失败时才作为兜底出现。

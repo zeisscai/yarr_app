@@ -106,7 +106,7 @@ cd desktop/e2e && npm install && node dialogs.spec.mjs
 | 日志 | 同目录 `yarr.log`，托盘菜单「打开日志」直达；启动失败页也会显示尾部日志 |
 | 单实例 | 第二次启动只激活已有窗口，绝不启动第二个 server（两个进程写同一个 SQLite 是最难查的故障） |
 | 关窗 | macOS 关窗只隐藏，应用留在托盘；Cmd+Q 才退出 |
-| 外链 | 站外链接交给系统浏览器；上游前端用的是普通 `<a href>`，不拦截会把整个应用导航走 |
+| 外链 | 站外链接（含 `target="_blank"`）一律交给系统浏览器。上游前端用的是普通 `<a href>`，不拦截会把整个应用导航走；而 `_blank` 在 WKWebView 里会被 wry 静默丢弃，所以壳在页面层把它降级成同窗口导航再拦截 |
 | 崩溃自愈 | sidecar 异常退出后按同端口自动重启（最多 3 次），页面自动重载 |
 | 退出回收 | 正常退出 / SIGTERM / SIGINT 都会先给 sidecar 发 SIGTERM，1.5s 未退出再 SIGKILL |
 | 强杀兜底 | 被 `kill -9` 或「强制退出」后 sidecar 会成为孤儿；下次启动会先清理占用同一数据库的残留进程 |
@@ -142,6 +142,20 @@ WKWebView 不实现 `alert` / `confirm` / `prompt`：wry 的 `WKUIDelegate` 只�
 MIT，见仓库根目录 `license`。本项目是非官方桌面封装，与上游作者无隶属关系。
 
 ## 故障排查
+
+### 阅读模式（书图标）提示「阅读模式加载失败」
+
+阅读模式**不是**浏览器渲染，而是把原链接交给后端重新抓取一遍再提取正文（`/page` → `handlePageCrawl`）。所以源站挡爬虫、文章被删、或者源站自己挂了，都会失败 —— 浏览器能打开不代表后端能抓到。
+
+排查：看日志里的 `failed to fetch ...`，它会带上状态码。
+
+```bash
+tail -20 ~/Library/Application\ Support/app.yarr.desktop/yarr.log | grep "failed to fetch"
+```
+
+实测样本（11 个真实订阅链接）：10 个成功，1 个失败且是源站返回 404（文章已删）。另见过 `status 521`（Cloudflare 说源站宕机）和偶发 `EOF`（瞬时网络抖动，重试即可）。
+
+失败时的替代路径：点工具栏里书图标**右边**的外链图标，用系统浏览器打开原文。
 
 ### 添加订阅提示「保存订阅失败 / 500 内部服务错误」
 

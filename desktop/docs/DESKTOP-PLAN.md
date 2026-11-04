@@ -387,7 +387,11 @@ PASS  退出回收（无残留进程）
 
 **根因**：上游的导出入口是普通链接 `<a href="./opml/export">`（不是 `target=_blank`，也没有 `download` 属性）。导航到该地址后，响应带 `Content-Disposition: attachment`，而 WKWebView 没有下载管理器，WebKit 无法渲染这个响应 —— 于是主框架停在一个空白文档上。这是桌面壳的缺口，不是上游 bug（浏览器里有原生下载）。
 
-**修法**（shell-only，不新增上游补丁）：在 `on_navigation` 里识别 `…/opml/export`，返回 `false` 拦下导航，另起线程用 `std::net::TcpStream` 直接对本地 sidecar 发一次 GET（不引 HTTP 客户端依赖），处理 chunked 编码后写到 `~/Downloads/<服务端给的文件名>`，再用 `open -R` 在 Finder 里选中。失败时兜底为「交给系统浏览器下载」。
+**修法**（shell-only，不新增上游补丁）：在 `on_navigation` 里识别 `…/opml/export`，返回 `false` 拦下导航，另起线程用 `std::net::TcpStream` 直接对本地 sidecar 发一次 GET（不引 HTTP 客户端依赖），处理 chunked 编码后落盘。失败时兜底为「交给系统浏览器下载」。
+
+**第二次迭代：改成「另存为」面板**。第一版直接写 `~/Downloads` 并在 Finder 里选中，用户反馈想要自己选路径和文件名。于是引入 `tauri-plugin-dialog`（官方插件，Rust 侧调用不需要额外 capability），流程变成：取回内容 → `dialog().file().set_title("导出订阅").set_file_name(服务端文件名).set_directory(下载目录).add_filter("OPML", ["opml"]).set_parent(主窗口).save_file(cb)` → 回调里写盘 + `open -R` 选中。用户取消则只记一行日志；面板里没补后缀时自动加 `.opml`。
+
+> 取舍：取数在后台线程完成后才弹面板，所以面板出现前有几十毫秒延迟；换来的是「弹窗时内容已经拿到」，用户选完路径立刻落盘，不会出现「选了路径再失败」。
 
 **顺带修掉的坑**：
 

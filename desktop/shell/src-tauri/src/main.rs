@@ -20,6 +20,7 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::PageLoadEvent;
+use tauri_plugin_dialog::DialogExt;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use sidecar::AppState;
@@ -117,6 +118,70 @@ fn reveal_in_file_manager(path: &std::path::Path) {
     let _ = cmd.spawn();
 }
 
+/// 拦截「导出订阅」后弹原生「另存为」面板，由用户决定路径和文件名。
+///
+/// 为什么不能交给 WebView：导出响应是 `Content-Disposition: attachment`，
+/// WKWebView 没有下载管理器，放行导航就会白屏。所以先自己把内容取回来，
+/// 再用系统面板写盘 —— 取数在后台线程，面板本身由插件调度到主线程。
+fn export_opml_with_dialog(app: &AppHandle, port: u16, fallback_url: &str) {
+    let handle = app.clone();
+    let fallback = fallback_url.to_string();
+
+    std::thread::spawn(move || {
+        let (name, body) = match sidecar::fetch_opml(port) {
+            Ok(v) => v,
+            Err(e) => {
+                log_sink(&handle, format!("[desktop] 读取订阅失败: {e}；改为用浏览器下载"));
+                open_url(&fallback);
+                return;
+            }
+        };
+
+        let mut builder = handle
+            .dialog()
+            .file()
+            .set_title("导出订阅")
+            .set_file_name(name)
+            .set_directory(sidecar::downloads_dir_pub())
+            .add_filter("OPML", &["opml"]);
+
+        if let Some(window) = handle.get_webview_window("main") {
+            builder = builder.set_parent(&window);
+        }
+
+        let log_handle = handle.clone();
+        builder.save_file(move |chosen| {
+            let Some(file_path) = chosen else {
+                log_sink(&log_handle, "[desktop] 已取消导出".to_string());
+                return;
+            };
+            let path = match file_path.into_path() {
+                Ok(p) => p,
+                Err(e) => {
+                    log_sink(&log_handle, format!("[desktop] 导出路径无效: {e}"));
+                    return;
+                }
+            };
+            // 面板里没手动补后缀时补一个，避免存成无扩展名文件
+            let path = if path.extension().is_none() {
+                path.with_extension("opml")
+            } else {
+                path
+            };
+            match std::fs::write(&path, &body) {
+                Ok(_) => {
+                    log_sink(&log_handle, format!("[desktop] 订阅已导出: {}", path.display()));
+                    reveal_in_file_manager(&path);
+                }
+                Err(e) => log_sink(
+                    &log_handle,
+                    format!("[desktop] 写入 {} 失败: {e}", path.display()),
+                ),
+            }
+        });
+    });
+}
+
 fn show_main(app: &AppHandle) {    if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -145,22 +210,7 @@ fn handle_navigation(app: &AppHandle, url: &tauri::Url, port: u16) -> bool {
         // 「导出订阅」是一个普通链接，响应是 attachment；WKWebView 没有下载管理器，
         // 放行导航会让整个窗口变成白屏。这里拦下来，自己取一次并存到下载目录。
         if url.path().ends_with("/opml/export") {
-            let handle = app.clone();
-            let fallback = url.to_string();
-            std::thread::spawn(move || match sidecar::save_opml(port) {
-                Ok(path) => {
-                    log_sink(&handle, format!("[desktop] 订阅已导出: {}", path.display()));
-                    reveal_in_file_manager(&path);
-                }
-                Err(e) => {
-                    // 取不到就退回浏览器下载，至少不让用户空手而归
-                    log_sink(
-                        &handle,
-                        format!("[desktop] 导出失败: {e}；改为用浏览器打开"),
-                    );
-                    open_url(&fallback);
-                }
-            });
+            export_opml_with_dialog(app, port, &url.to_string());
             return false;
         }
         return true;
@@ -296,6 +346,7 @@ fn main() {
         // 启动时执行 window.show()，这会在 yarr 就绪前把「正在启动本地服务」的
         // 本地页显示出来 —— 窗口隐藏策略就被这一步破坏掉了。
         // 尺寸/位置/最大化仍然记忆。
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(

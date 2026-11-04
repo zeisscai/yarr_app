@@ -647,8 +647,8 @@ fn downloads_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// 导出订阅到 `~/Downloads/<服务端给的文件名>`，返回落盘路径。
-pub fn save_opml(port: u16) -> Result<PathBuf, String> {
+/// 取回订阅内容，返回（建议文件名, 字节）。UI 侧拿去弹「另存为」，CLI 侧直接落盘。
+pub fn fetch_opml(port: u16) -> Result<(String, Vec<u8>), String> {
     if port == 0 {
         return Err("本地服务尚未就绪".to_string());
     }
@@ -657,9 +657,20 @@ pub fn save_opml(port: u16) -> Result<PathBuf, String> {
         return Err("导出内容为空".to_string());
     }
     let name = filename_from_headers(&head).unwrap_or_else(|| "subscriptions.opml".to_string());
+    Ok((sanitize_filename(&name), body))
+}
+
+/// 默认下载目录，供「另存为」面板初始定位用。
+pub fn downloads_dir_pub() -> PathBuf {
+    downloads_dir()
+}
+
+/// 无 UI 的导出路径（CLI 调试、自动化）：直接写 `~/Downloads/<服务端给的文件名>`。
+pub fn save_opml(port: u16) -> Result<PathBuf, String> {
+    let (name, body) = fetch_opml(port)?;
     let dir = downloads_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(sanitize_filename(&name));
+    let path = dir.join(name);
     std::fs::write(&path, &body).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
     Ok(path)
 }

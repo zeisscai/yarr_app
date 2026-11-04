@@ -53,20 +53,20 @@ jobs:
 
     steps:
       - name: 检出代码（完整历史）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # build-sidecar.sh 用 git describe / git log 生成版本信息，浅克隆会失败
           fetch-depth: 0
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: package-lock.json
 
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # 直接读 go.mod 里声明的版本（1.26.0），避免 runner 自带版本过旧导致
           # GOTOOLCHAIN=auto 的下载链路成为隐藏依赖
@@ -83,7 +83,7 @@ jobs:
 
       - name: 安装 Zig（Linux / Windows 交叉编译 sqlite 需要 C 编译器）
         if: runner.os != 'macOS'
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.14.0
 
@@ -167,7 +167,7 @@ jobs:
           "$BIN" -version
 
       - name: 上传安装包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: yarr-desktop-${{ matrix.name }}
           if-no-files-found: error
@@ -190,7 +190,7 @@ jobs:
       contents: write
     steps:
       - name: 汇总三平台安装包
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -201,7 +201,7 @@ jobs:
         run: find dist -type f | sort
 
       - name: 创建 Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: yarr desktop ${{ github.ref_name }}

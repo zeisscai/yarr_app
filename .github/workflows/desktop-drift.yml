@@ -30,7 +30,7 @@ jobs:
       BASE_BRANCH: desktop
     steps:
       - name: 检出代码（完整历史）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 需要完整历史才能做 merge / merge-tree，并能列出 desktop..upstream/master 的提交
           fetch-depth: 0

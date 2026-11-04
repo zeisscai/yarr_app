@@ -179,7 +179,8 @@ jobs:
             desktop/shell/src-tauri/target/release/bundle/nsis/*.exe
 
   # 只有推 desktop-v* 标签时才发 Release（手动 dispatch 只出 artifact，不发版）。
-  # 标记为 prerelease：包未做代码签名/公证，直接当正式版发会误导下载者。
+  # 是否标 pre-release 由 tag 后缀决定（见下面 prerelease 表达式）：
+  # 稳定的 desktop-vX.Y.Z 走正式发布，才能被 GitHub 认定为 Latest release。
   release:
     name: 发布 Release
     needs: build
@@ -204,7 +205,10 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: yarr desktop ${{ github.ref_name }}
-          prerelease: true
+          # 只有带 -rc / -beta / -alpha 后缀的 tag 才算 pre-release。
+          # GitHub 的「Latest release」只认非 prerelease 的发布：全是 prerelease 时
+          # 仓库首页侧边栏只会显示一个裸 tag，拿不到版本号和发布说明。
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           draft: false
           fail_on_unmatched_files: true
           body: |
@@ -216,6 +220,8 @@ jobs:
             | macOS (Apple Silicon) | `.dmg` |
             | Windows x64 | NSIS `.exe` |
             | Linux x64 | `.AppImage` / `.deb` |
+
+            > 这是正式发布的版本，但**未做代码签名/公证**，系统会拦一次，见下。
 
             ## 未签名提示（重要）
 

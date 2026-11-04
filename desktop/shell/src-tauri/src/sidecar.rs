@@ -536,3 +536,155 @@ fn supervise(app: AppHandle, st: Arc<AppState>, mut child: Child) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// OPML 导出
+//
+// 桌面端没有下载管理器：上游的「导出订阅」是一个普通链接（href="./opml/export"），
+// 点下去 WKWebView 会导航到这个地址，而响应带 Content-Disposition: attachment，
+// WebKit 无法渲染，于是整个窗口变成白屏，只能重启应用。
+// 所以在 on_navigation 里拦下这个路径，自己取一次 HTTP 响应存到下载目录。
+// ---------------------------------------------------------------------------
+
+/// 直接对本地 sidecar 发一个 GET。刻意不引 HTTP 客户端依赖：目标是 127.0.0.1
+/// 的已知路径、响应很小，用 std 的 TcpStream 足够，也少一个要跟着升级的 crate。
+fn http_get_local(port: u16, path: &str) -> Result<(String, Vec<u8>), String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|e| format!("连接本地服务失败: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| format!("设置超时失败: {e}"))?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: yarr-desktop\r\nAccept: application/xml\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("发送请求失败: {e}"))?;
+
+    let mut raw = Vec::new();
+    std::io::Read::read_to_end(&mut stream, &mut raw)
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "响应格式异常（找不到头部结束）".to_string())?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let mut body = raw[split + 4..].to_vec();
+
+    let status_line = head.lines().next().unwrap_or("");
+    if !status_line.contains(" 200") {
+        return Err(format!("服务端返回异常: {status_line}"));
+    }
+
+    let lower = head.to_ascii_lowercase();
+    if lower.contains("transfer-encoding: chunked") {
+        body = decode_chunked(&body).ok_or_else(|| "chunked 解码失败".to_string())?;
+    }
+
+    Ok((head, body))
+}
+
+/// Go 的 net/http 在响应超过内部缓冲时会用 chunked 编码，必须解码后再落盘。
+fn decode_chunked(mut data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = data.windows(2).position(|w| w == b"\r\n")?;
+        let line = std::str::from_utf8(&data[..line_end]).ok()?;
+        let size = usize::from_str_radix(line.split(';').next()?.trim(), 16).ok()?;
+        data = &data[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        if data.len() < size {
+            return None;
+        }
+        out.extend_from_slice(&data[..size]);
+        data = &data[size..];
+        if data.starts_with(b"\r\n") {
+            data = &data[2..];
+        }
+    }
+    Some(out)
+}
+
+fn filename_from_headers(head: &str) -> Option<String> {
+    for line in head.lines() {
+        if !line.to_ascii_lowercase().starts_with("content-disposition:") {
+            continue;
+        }
+        let idx = line.find("filename=\"")?;
+        let rest = &line[idx + "filename=\"".len()..];
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    None
+}
+
+fn sanitize_filename(name: &str) -> String {
+    // 先取最后一段再清洗：`../../x` 这种直接变成 `x`，避免路径穿越
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_start_matches('.').to_string();
+    if trimmed.is_empty() {
+        "subscriptions.opml".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn downloads_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join("Downloads");
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        return PathBuf::from(profile).join("Downloads");
+    }
+    std::env::temp_dir()
+}
+
+/// 导出订阅到 `~/Downloads/<服务端给的文件名>`，返回落盘路径。
+pub fn save_opml(port: u16) -> Result<PathBuf, String> {
+    if port == 0 {
+        return Err("本地服务尚未就绪".to_string());
+    }
+    let (head, body) = http_get_local(port, "/opml/export")?;
+    if body.is_empty() {
+        return Err("导出内容为空".to_string());
+    }
+    let name = filename_from_headers(&head).unwrap_or_else(|| "subscriptions.opml".to_string());
+    let dir = downloads_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(sanitize_filename(&name));
+    std::fs::write(&path, &body).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_chunked_body() {
+        let raw = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        assert_eq!(decode_chunked(raw).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn parses_filename() {
+        let head = "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"subscriptions_2026-11-04.opml\"\r\n";
+        assert_eq!(
+            filename_from_headers(head).unwrap(),
+            "subscriptions_2026-11-04.opml"
+        );
+    }
+
+    #[test]
+    fn sanitizes_path_traversal() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+    }
+}

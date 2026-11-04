@@ -109,6 +109,7 @@ cd desktop/e2e && npm install && node dialogs.spec.mjs
 | 外链 | 站外链接（含 `target="_blank"`）一律交给系统浏览器。上游前端用的是普通 `<a href>`，不拦截会把整个应用导航走；而 `_blank` 在 WKWebView 里会被 wry 静默丢弃，所以壳在页面层把它降级成同窗口导航再拦截 |
 | 崩溃自愈 | sidecar 异常退出后按同端口自动重启（最多 3 次），页面自动重载 |
 | 退出回收 | 正常退出 / SIGTERM / SIGINT 都会先给 sidecar 发 SIGTERM，1.5s 未退出再 SIGKILL |
+| 导出订阅 | 上游的「导出」是普通链接指向 `/opml/export`，响应是 attachment —— WKWebView 没有下载管理器，直接放行会白屏。壳在导航层拦下，自己取一次并存到 `~/Downloads/`，然后在 Finder 里选中该文件 |
 | 强杀兜底 | 被 `kill -9` 或「强制退出」后 sidecar 会成为孤儿；下次启动会先清理占用同一数据库的残留进程 |
 
 调试用环境变量：`YARR_DATA_DIR=/tmp/xxx` 覆盖数据目录；`YARR_SIDECAR=/path/to/yarr` 指定二进制。
@@ -129,7 +130,6 @@ WKWebView 不实现 `alert` / `confirm` / `prompt`：wry 的 `WKUIDelegate` 只�
 ## 已知限制
 
 - 未签名、未公证：本地构建是 ad-hoc 签名，分发给别人会被 Gatekeeper 拦（M4 再处理）。
-- OPML 导出走 `/opml/export` 下载，WebView 内未接下载管理器，行为待验证。
 - 仅适配 macOS；Windows / Linux 的托盘与关闭语义在代码里已分支，但未实测。
 - 托盘菜单、关窗隐藏这两条依赖人工点击，未纳入自动化冒烟。
 

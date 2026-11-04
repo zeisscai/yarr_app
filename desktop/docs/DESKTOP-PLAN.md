@@ -380,3 +380,22 @@ PASS  退出回收（无残留进程）
 修法（shell-only，**不新增上游补丁**）：`desktop/shell/ui/links.js` 在捕获阶段接管跨源 `http/https/mailto` 链接，`preventDefault()` 后改成同窗口 `location.href`，由 Rust 的 `on_navigation` 拦下并交系统浏览器。站内链接、锚点、`⌘/Ctrl/Shift` 点击都保持原样。
 
 验证：用 Chromium 加载含 `target=_blank` 的测试页，点击后无 popup、URL 变为目标地址（说明垫片生效）；再确认二进制内含 `__yarrLinks` 串。
+
+### 11.10 导出订阅白屏（2026-11-04）
+
+**症状**：点「导出」（导出订阅）后整个窗口白屏，只能重启应用。
+
+**根因**：上游的导出入口是普通链接 `<a href="./opml/export">`（不是 `target=_blank`，也没有 `download` 属性）。导航到该地址后，响应带 `Content-Disposition: attachment`，而 WKWebView 没有下载管理器，WebKit 无法渲染这个响应 —— 于是主框架停在一个空白文档上。这是桌面壳的缺口，不是上游 bug（浏览器里有原生下载）。
+
+**修法**（shell-only，不新增上游补丁）：在 `on_navigation` 里识别 `…/opml/export`，返回 `false` 拦下导航，另起线程用 `std::net::TcpStream` 直接对本地 sidecar 发一次 GET（不引 HTTP 客户端依赖），处理 chunked 编码后写到 `~/Downloads/<服务端给的文件名>`，再用 `open -R` 在 Finder 里选中。失败时兜底为「交给系统浏览器下载」。
+
+**顺带修掉的坑**：
+
+- 文件名取自 `Content-Disposition`，清洗时先取最后一段再过滤，避免 `../` 穿越（单测覆盖）
+- Go 的 `net/http` 在大响应上用 chunked 编码，必须解码，否则文件尾部会夹带块长度（单测覆盖）
+
+**验证**：
+
+- `cargo test`：chunked 解码、文件名解析、路径穿越清洗 3 项通过
+- 新增 `yarr-desktop --export-opml <port>` 调试入口，走的是和 UI 点击完全相同的 `save_opml`，便于无 UI 自动化的环境验证
+- 实测导出 `~/Downloads/subscriptions_2026-11-04_22-48-44.opml`，8557 字节，68 个 `<outline>`，`<opml version="1.1">` 结构正常

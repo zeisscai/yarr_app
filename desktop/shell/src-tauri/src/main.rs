@@ -85,8 +85,39 @@ fn open_url(url: &str) {
     let _ = cmd.arg(url).spawn();
 }
 
-fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+fn log_sink(app: &AppHandle, line: String) {
+    if let Some(st) = app.try_state::<Arc<AppState>>() {
+        st.sink.push(line);
+    }
+}
+
+/// 在文件管理器里选中刚下载的文件（macOS 的 `open -R`）。
+fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("explorer");
+        c.arg(format!("/select,{}", path.display()));
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        if let Some(dir) = path.parent() {
+            c.arg(dir);
+        }
+        c
+    };
+
+    let _ = cmd.spawn();
+}
+
+fn show_main(app: &AppHandle) {    if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -111,6 +142,27 @@ fn handle_navigation(app: &AppHandle, url: &tauri::Url, port: u16) -> bool {
         && url.port().map(|p| p == port).unwrap_or(false);
 
     if is_yarr {
+        // 「导出订阅」是一个普通链接，响应是 attachment；WKWebView 没有下载管理器，
+        // 放行导航会让整个窗口变成白屏。这里拦下来，自己取一次并存到下载目录。
+        if url.path().ends_with("/opml/export") {
+            let handle = app.clone();
+            let fallback = url.to_string();
+            std::thread::spawn(move || match sidecar::save_opml(port) {
+                Ok(path) => {
+                    log_sink(&handle, format!("[desktop] 订阅已导出: {}", path.display()));
+                    reveal_in_file_manager(&path);
+                }
+                Err(e) => {
+                    // 取不到就退回浏览器下载，至少不让用户空手而归
+                    log_sink(
+                        &handle,
+                        format!("[desktop] 导出失败: {e}；改为用浏览器打开"),
+                    );
+                    open_url(&fallback);
+                }
+            });
+            return false;
+        }
         return true;
     }
 
@@ -206,6 +258,26 @@ fn spawn_signal_thread(app: AppHandle) {
 }
 
 fn main() {
+    // 调试/自动化入口：不开窗口，直接把订阅导出到下载目录
+    //   yarr-desktop --export-opml <port>
+    // 走的是和 UI 点击完全相同的 save_opml 路径，便于在没有 UI 自动化的环境里验证。
+    if let Some(pos) = std::env::args().position(|a| a == "--export-opml") {
+        let port = std::env::args()
+            .nth(pos + 1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        match sidecar::save_opml(port) {
+            Ok(path) => {
+                println!("{}", path.display());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("导出失败: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // 必须在创建任何线程之前屏蔽退出信号，否则信号会被其他线程接走并直接终止进程，
     // 走不到 RunEvent::Exit，sidecar 就变成孤儿进程。
     #[cfg(unix)]

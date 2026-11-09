@@ -25,9 +25,26 @@
   cursor: default;
 }
 
+.line-clamp-1 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
 .line-clamp-3 {
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+}
+
+.show-delayed {
+  visibility: hidden;
+  animation: reveal 0s 0.3s forwards;
+}
+@keyframes reveal {
+  to {
+    visibility: visible;
+  }
 }

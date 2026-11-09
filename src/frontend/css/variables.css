@@ -19,6 +19,10 @@
   --v-button-background-hover: oklch(from var(--v-button-background) calc(l - 0.02) c h);
   --v-button-background-active: oklch(from var(--v-button-background) calc(l - 0.05) c h);
 
+  --v-shadow-color: hsl(from var(--v-fg) h s l / 0.1);
+  --v-shadow-md: 0 1px 2px var(--v-shadow-color);
+  --v-shadow-lg: 0 2px 6px var(--v-shadow-color);
+
   --v-chrome-height: 1.6rem;
 
   /* bootstrap var overrides */
@@ -41,7 +45,7 @@
     --v-active-bg: var(--v-color-blue);
     --v-active-fg: var(--v-bg);
 
-    --v-hover-bg: hsl(from var(--v-color-dark) h s 92%);
+    --v-hover-bg: hsl(from var(--v-color-dark) h s 96%);
     --v-hover-fg: var(--v-fg);
   }
 }
@@ -66,8 +70,10 @@
   &:root {
     color-scheme: dark;
 
+    --v-shadow-color: hsl(0 0% 0% / 0.5);
+
     --v-border-color: hsl(from var(--v-night-bg) h s 15%);
-    --v-focus-color: hsl(from var(--v-night-bg) h s 10%);
+    --v-focus-color: hsl(from var(--v-night-bg) h s 30%);
 
     --v-bg: var(--v-night-bg);
     --v-fg: hsl(from var(--v-night-bg) h s 90%);
@@ -75,7 +81,7 @@
     --v-active-bg: var(--v-color-blue);
     --v-active-fg: var(--v-fg);
 
-    --v-hover-bg: hsl(from var(--v-night-bg) h s 12%);
+    --v-hover-bg: hsl(from var(--v-night-bg) h s 9%);
     --v-hover-fg: var(--v-fg);
   }
 }
@@ -95,7 +101,7 @@
     --v-active-bg: var(--v-color-blue);
     --v-active-fg: var(--v-bg);
 
-    --v-hover-bg: hsl(from var(--v-color-dark) h s 92%);
+    --v-hover-bg: hsl(from var(--v-color-dark) h s 96%);
     --v-hover-fg: var(--v-fg);
   }
 }
@@ -105,8 +111,10 @@
     &:root {
       color-scheme: dark;
 
+      --v-shadow-color: hsl(0 0% 0% / 0.5);
+
       --v-border-color: hsl(from var(--v-night-bg) h s 15%);
-      --v-focus-color: hsl(from var(--v-night-bg) h s 10%);
+      --v-focus-color: hsl(from var(--v-night-bg) h s 30%);
 
       --v-bg: var(--v-night-bg);
       --v-fg: hsl(from var(--v-night-bg) h s 90%);
@@ -114,7 +122,7 @@
       --v-active-bg: var(--v-color-blue);
       --v-active-fg: var(--v-fg);
 
-      --v-hover-bg: hsl(from var(--v-night-bg) h s 12%);
+      --v-hover-bg: hsl(from var(--v-night-bg) h s 9%);
       --v-hover-fg: var(--v-fg);
     }
   }
